@@ -1,71 +1,86 @@
 // src/hooks/usePolling.ts
-import { useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useAircraftStore } from '../lib/state/useAircraftStore';
-import { normalizeStateVector } from '../app/api/opensky/normalizer';
+import { normalizeStateVector } from '../lib/opensky/normalizer';
 import type { RawStateVector } from '../lib/opensky/types';
-// Default bounding box (Example: A large area over India)
-// You can adjust these later when we build the map view
-const DEFAULT_BBOX = {
-  lamin: 8.0,
-  lomin: 68.0,
-  lamax: 37.0,
-  lomax: 97.0,
-};
 
 export function usePolling(intervalMs: number = 10000) {
   const { mergeUpdate, setHealth } = useAircraftStore();
-  
-  // Use refs so we don't trigger re-renders just by tracking request status
   const isFetching = useRef(false);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const fetchData = useCallback(async () => {
-    // 1. Prevent overlapping requests
+    const store = useAircraftStore.getState();
+    if (store.replay.isReplaying || store.chaos.forceOffline) {
+      if (store.chaos.forceOffline) {
+        setHealth({ status: 'offline', isCached: true });
+      }
+      return;
+    }
+
     if (isFetching.current) return;
     isFetching.current = true;
 
-    try {
-      const { lamin, lomin, lamax, lomax } = DEFAULT_BBOX;
-      const url = `/api/opensky?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`;
-      
-      const response = await fetch(url);
-      const result = await response.json();
+    const startTime = performance.now();
 
-      if (!response.ok) {
-        // Handle Rate limits (429) or Server Errors (500)
-        setHealth({ 
-          status: response.status === 429 ? 'rate_limited' : 'degraded',
-          errorCount: useAircraftStore.getState().health.errorCount + 1
+    try {
+      const { bbox } = store.activeSector;
+      const { forceRateLimit, forcePacketLoss } = store.chaos;
+
+      let url = `/api/opensky?lamin=${bbox.lamin}&lomin=${bbox.lomin}&lamax=${bbox.lamax}&lomax=${bbox.lomax}`;
+      if (forceRateLimit) url += '&chaosRateLimit=true';
+      if (forcePacketLoss) url += '&chaosPacketLoss=true';
+
+      const response = await fetch(url);
+      const latencyMs = Math.round(performance.now() - startTime);
+
+      if (response.status === 429) {
+        setHealth({
+          status: 'rate_limited',
+          errorCount: store.health.errorCount + 1,
+          retryCountdown: 10,
+          latencyMs,
         });
         isFetching.current = false;
         return;
       }
 
-      // OpenSky returns null for 'states' if no aircraft are in the bounding box
+      if (!response.ok) {
+        setHealth({
+          status: 'degraded',
+          errorCount: store.health.errorCount + 1,
+          latencyMs,
+        });
+        isFetching.current = false;
+        return;
+      }
+
+      const result = await response.json();
       const rawStates: RawStateVector[] = result.data?.states || [];
-      
-      // 2. Clean the data using our normalizer
       const cleanedAircraft = rawStates.map(normalizeStateVector);
 
-      // 3. Send it to the Zustand store to be merged
-      mergeUpdate(cleanedAircraft, result.fetchedAt, result.credits);
+      mergeUpdate(cleanedAircraft, result.fetchedAt || Date.now(), result.credits || 'Unknown', latencyMs);
 
+      if (result.isCached) {
+        setHealth({ isCached: true, status: result.rateLimited ? 'rate_limited' : 'live' });
+      }
     } catch (error) {
-      console.error("Failed to fetch aircraft:", error);
-      setHealth({ status: 'degraded', errorCount: useAircraftStore.getState().health.errorCount + 1 });
+      console.warn('ADS-B stream degraded:', error);
+      setHealth({
+        status: 'degraded',
+        errorCount: useAircraftStore.getState().health.errorCount + 1,
+        latencyMs: Math.round(performance.now() - startTime),
+      });
     } finally {
       isFetching.current = false;
     }
   }, [mergeUpdate, setHealth]);
 
   useEffect(() => {
-    // Do an immediate fetch on mount
     fetchData();
 
-    // Setup the smart polling interval
     const tick = () => {
-      // 4. Page Visibility API: Only fetch if the user is actually looking at the tab
-      if (document.visibilityState === 'visible') {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
         fetchData();
       }
       timeoutRef.current = setTimeout(tick, intervalMs);
@@ -73,16 +88,14 @@ export function usePolling(intervalMs: number = 10000) {
 
     timeoutRef.current = setTimeout(tick, intervalMs);
 
-    // 5. Resume immediately if the user comes back to the tab
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         fetchData();
       }
     };
-    
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // Cleanup on unmount
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
