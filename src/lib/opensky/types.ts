@@ -1,3 +1,5 @@
+export type AircraftCategory = 'light' | 'airliner' | 'heavy' | 'helicopter';
+
 /** One state vector returned by the OpenSky `/states/all` endpoint. */
 export type RawStateVector = [
   icao24: string,
@@ -37,4 +39,5 @@ export interface Aircraft {
   geoAltitude: number | null;
   squawk: string | null;
   positionSource: number;
+  category: AircraftCategory;
 }
