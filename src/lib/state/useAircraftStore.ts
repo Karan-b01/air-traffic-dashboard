@@ -9,10 +9,17 @@ import type {
   ReplaySnapshot,
   ThemeMode,
   TrackedAircraft,
+  UnitSystem,
   ViewMode,
 } from './types';
 import { soundFx } from '../audio/AudioSynthesizer';
-
+import {
+  persistSectorSnapshot,
+  loadCachedSnapshot,
+  saveAlertRule,
+  deleteAlertRule,
+  type AlertRule,
+} from '../persistence/db';
 
 export interface SectorConfig {
   id: string;
@@ -85,29 +92,44 @@ interface ReplayState {
 interface AircraftState {
   aircraft: Record<string, TrackedAircraft>;
   selectedId: string | null;
+  hoveredId: string | null;
+  chaseCameraId: string | null;
   health: FetchHealth;
   viewMode: ViewMode;
   themeMode: ThemeMode;
+  unitSystem: UnitSystem;
   filters: AirspaceFilter;
   chaos: ChaosSettings;
   radarSweepEnabled: boolean;
   densityHeatmapEnabled: boolean;
   rangeRingsEnabled: boolean;
   altitudeCorridorOpen: boolean;
+  analyticsOpen: boolean;
+  alertsModalOpen: boolean;
+  tableViewOpen: boolean;
+  onboardingDismissed: boolean;
   soundEnabled: boolean;
   events: AtcEvent[];
   replay: ReplayState;
   activeSector: SectorConfig;
-  chaseCameraId: string | null;
-  hoveredId: string | null;
+  alertRules: AlertRule[];
 
   // Actions
-  mergeUpdate: (newData: Aircraft[], timestamp: number, credits: string, latencyMs?: number) => void;
+  mergeUpdate: (
+    newData: Aircraft[],
+    timestamp: number,
+    credits: string,
+    latencyMs?: number,
+    dataSource?: 'live' | 'cache' | 'simulated',
+    isSimulated?: boolean
+  ) => void;
+  pruneInactiveAircraft: (now?: number) => void;
   selectAircraft: (id: string | null) => void;
   setHoveredId: (id: string | null) => void;
   setChaseCamera: (id: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   setThemeMode: (mode: ThemeMode) => void;
+  setUnitSystem: (unit: UnitSystem) => void;
   setFilter: (updates: Partial<AirspaceFilter>) => void;
   resetFilter: () => void;
   setChaos: (updates: Partial<ChaosSettings>) => void;
@@ -115,10 +137,20 @@ interface AircraftState {
   toggleDensityHeatmap: () => void;
   toggleRangeRings: () => void;
   toggleAltitudeCorridor: () => void;
+  toggleAnalytics: () => void;
+  toggleAlertsModal: () => void;
+  toggleTableView: () => void;
+  setOnboardingDismissed: (dismissed: boolean) => void;
   toggleSound: () => void;
   addEvent: (event: Omit<AtcEvent, 'id' | 'timestamp'>) => void;
   setHealth: (updates: Partial<FetchHealth>) => void;
   setSector: (sectorId: string) => void;
+  restoreFromIndexedDB: (sectorId: string) => Promise<void>;
+
+  // Alert Rules Actions
+  addAlertRule: (rule: Omit<AlertRule, 'id'>) => void;
+  toggleAlertRule: (id: string) => void;
+  removeAlertRule: (id: string) => void;
 
   // Replay actions
   startReplay: () => void;
@@ -138,11 +170,38 @@ const DEFAULT_FILTERS: AirspaceFilter = {
   searchQuery: '',
 };
 
+const DEFAULT_ALERT_RULES: AlertRule[] = [
+  {
+    id: 'rule-low-alt',
+    name: 'Low Altitude Warning (<1500m)',
+    field: 'altitude',
+    operator: '<',
+    value: 1500,
+    enabled: true,
+  },
+  {
+    id: 'rule-geofence',
+    name: 'Terminal Approach Geofence (<80 km)',
+    field: 'geofence',
+    operator: '<',
+    value: 80,
+    enabled: true,
+  },
+  {
+    id: 'rule-high-speed',
+    name: 'High Speed Intercept (>900 km/h)',
+    field: 'speed',
+    operator: '>',
+    value: 900,
+    enabled: false,
+  },
+];
+
 export const useAircraftStore = create<AircraftState>((set, get) => ({
   aircraft: {},
   selectedId: null,
-  chaseCameraId: null,
   hoveredId: null,
+  chaseCameraId: null,
   health: {
     status: 'live',
     lastSuccessTime: null,
@@ -153,8 +212,9 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
     isCached: false,
     retryCountdown: 0,
   },
-  viewMode: '3d', // Default to 3D with altitude stems!
+  viewMode: '3d',
   themeMode: 'night',
+  unitSystem: 'aviation',
   filters: DEFAULT_FILTERS,
   chaos: {
     forceRateLimit: false,
@@ -167,6 +227,10 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
   densityHeatmapEnabled: false,
   rangeRingsEnabled: true,
   altitudeCorridorOpen: false,
+  analyticsOpen: false,
+  alertsModalOpen: false,
+  tableViewOpen: false,
+  onboardingDismissed: typeof window !== 'undefined' ? localStorage.getItem('atc_onboarding_seen') === 'true' : false,
   soundEnabled: typeof window !== 'undefined' ? localStorage.getItem('atc_audio_enabled') === 'true' : false,
   events: [
     {
@@ -185,9 +249,9 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
     isPlaying: false,
   },
   activeSector: SECTORS[0],
+  alertRules: DEFAULT_ALERT_RULES,
 
-  mergeUpdate: (newData, timestamp, credits, latencyMs) => set((state) => {
-    // If replaying or chaos offline, ignore live stream
+  mergeUpdate: (newData, timestamp, credits, latencyMs, dataSource, isSimulated) => set((state) => {
     if (state.replay.isReplaying || state.chaos.forceOffline) return {};
 
     const updatedAircraft = { ...state.aircraft };
@@ -196,7 +260,6 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
     const chaosJitter = state.chaos.forceGpsJitter;
 
     newData.forEach((plane, index) => {
-      // Apply simulated chaos if enabled
       let lon = plane.longitude;
       let lat = plane.latitude;
       if (chaosJitter) {
@@ -204,7 +267,6 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
         lat += (Math.random() - 0.5) * 0.08;
       }
 
-      // First aircraft becomes emergency if chaos squawk is on
       const isEmergency = chaosEmergency && index === 0
         ? true
         : plane.squawk === '7700' || plane.squawk === '7600' || plane.squawk === '7500';
@@ -218,7 +280,17 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
       };
 
       if (existing) {
-        // Detect significant flight events for the event feed
+        // Out-of-order update protection:
+        // In distributed ADS-B networks, delayed packets can arrive out-of-order.
+        // If the incoming packet has an earlier lastContact or timestamp than what
+        // we've already processed for this aircraft, discard it to prevent position/time regression!
+        const existingTime = existing.lastContact ?? existing.lastSeen;
+        const incomingTime = plane.lastContact ?? timestamp;
+        if (incomingTime < existingTime) {
+          return;
+        }
+
+        // Significant altitude climb or descent event
         if (existing.baroAltitude != null && plane.baroAltitude != null) {
           const altDiff = plane.baroAltitude - existing.baroAltitude;
           if (altDiff > 600) {
@@ -252,7 +324,7 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
           isEmergency,
         };
       } else {
-        // New plane entering sector
+        // Sector entry event
         newEvents.push({
           id: `${plane.icao24}-enter-${timestamp}`,
           timestamp,
@@ -272,34 +344,81 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
           isEmergency,
         };
       }
+
+      // Check User Alert Rules
+      state.alertRules.forEach((rule) => {
+        if (!rule.enabled) return;
+        const callsign = plane.callsign.trim() || plane.icao24.toUpperCase();
+        let val: number | null = null;
+        if (rule.field === 'altitude') val = plane.baroAltitude;
+        if (rule.field === 'speed') val = plane.velocity != null ? plane.velocity * 3.6 : null;
+        if (rule.field === 'verticalRate') val = plane.verticalRate;
+        if (rule.field === 'geofence') {
+          // Calculate distance in km from active sector center
+          const [cLon, cLat] = state.activeSector.center;
+          const dLat = ((lat - cLat) * Math.PI) / 180;
+          const dLon = ((lon - cLon) * Math.PI) / 180;
+          const a =
+            Math.sin(dLat / 2) ** 2 +
+            Math.cos((cLat * Math.PI) / 180) * Math.cos((lat * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+          val = 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
+
+        if (val != null) {
+          const match =
+            (rule.operator === '<' && val < rule.value) ||
+            (rule.operator === '>' && val > rule.value) ||
+            (rule.operator === '==' && Math.round(val) === rule.value);
+
+          if (match && (!rule.lastTriggered || timestamp - rule.lastTriggered > 60000)) {
+            rule.lastTriggered = timestamp;
+            const unitSuffix =
+              rule.field === 'altitude' ? 'm' : rule.field === 'speed' ? 'km/h' : rule.field === 'geofence' ? 'km' : 'm/s';
+            newEvents.push({
+              id: `${plane.icao24}-alert-${timestamp}`,
+              timestamp,
+              type: 'alert_rule',
+              callsign,
+              message: `ALERT TRIGGERED: ${rule.name} (${Math.round(val)}${unitSuffix})`,
+            });
+            if (state.soundEnabled) soundFx.playEmergencyAlert();
+          }
+        }
+      });
     });
 
-    // Mark missing aircraft as stale if not seen in 25s, lost if > 60s
+    // Mark missing aircraft: live (<=10s), aging (10-25s), stale (25-60s), lost (>60s), remove (>300s / 5 min)
     const now = timestamp;
     for (const icao in updatedAircraft) {
       const plane = updatedAircraft[icao];
       const age = now - plane.lastSeen;
-      if (age > 60000) {
+      if (age > 300000) {
+        // Enforce 5-minute automatic removal
+        delete updatedAircraft[icao];
+      } else if (age > 60000) {
         plane.status = 'lost';
-      } else if (age > 20000) {
+      } else if (age > 25000) {
         plane.status = 'stale';
+      } else if (age > 10000) {
+        plane.status = 'aging';
       }
     }
 
-    // Save snapshot for Blackbox Replay mode (keep last 30 snapshots)
+    // Persist snapshot to IndexedDB for offline resumption
+    persistSectorSnapshot(state.activeSector.id, updatedAircraft);
+
+    // Save snapshot for Blackbox Replay mode
     const newSnapshot: ReplaySnapshot = {
       timestamp,
       aircraft: JSON.parse(JSON.stringify(updatedAircraft)),
     };
     const snapshots = [...state.replay.snapshots, newSnapshot].slice(-30);
 
-    // Play blip sound on fresh contact update if audio enabled
-    if (state.soundEnabled && newData.length > 0) {
-      soundFx.playRadarBlip();
-    }
+    const resolvedDataSource = dataSource || (isSimulated ? 'simulated' : 'live');
 
     return {
       aircraft: updatedAircraft,
+      selectedId: state.selectedId && !updatedAircraft[state.selectedId] ? null : state.selectedId,
       events: [...newEvents, ...state.events].slice(0, 50),
       replay: {
         ...state.replay,
@@ -308,14 +427,61 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
       health: {
         ...state.health,
         status: 'live',
+        dataSource: resolvedDataSource,
+        isSimulated: Boolean(isSimulated || resolvedDataSource === 'simulated'),
         lastSuccessTime: timestamp,
         creditsRemaining: parseInt(credits, 10) || state.health.creditsRemaining || 950,
         errorCount: 0,
         latencyMs: latencyMs ?? state.health.latencyMs ?? 140,
-        isCached: false,
+        isCached: resolvedDataSource === 'cache' || state.health.isCached,
+        retryCountdown: 0,
       },
     };
   }),
+
+  pruneInactiveAircraft: (now = Date.now()) => set((state) => {
+    let changed = false;
+    const updated = { ...state.aircraft };
+    for (const icao in updated) {
+      const plane = updated[icao];
+      const age = now - plane.lastSeen;
+      if (age > 300000) {
+        delete updated[icao];
+        changed = true;
+      } else if (age > 60000 && plane.status !== 'lost') {
+        updated[icao] = { ...plane, status: 'lost' };
+        changed = true;
+      } else if (age > 25000 && plane.status !== 'stale') {
+        updated[icao] = { ...plane, status: 'stale' };
+        changed = true;
+      } else if (age > 10000 && plane.status !== 'aging') {
+        updated[icao] = { ...plane, status: 'aging' };
+        changed = true;
+      } else if (age <= 10000 && plane.status !== 'live') {
+        updated[icao] = { ...plane, status: 'live' };
+        changed = true;
+      }
+    }
+    if (!changed) return {};
+    return {
+      aircraft: updated,
+      selectedId: state.selectedId && !updated[state.selectedId] ? null : state.selectedId,
+    };
+  }),
+
+  restoreFromIndexedDB: async (sectorId) => {
+    const cached = await loadCachedSnapshot(sectorId);
+    if (cached && Object.keys(cached.aircraft).length > 0) {
+      set((state) => ({
+        aircraft: cached.aircraft,
+        health: {
+          ...state.health,
+          isCached: true,
+          lastSuccessTime: cached.timestamp,
+        },
+      }));
+    }
+  },
 
   selectAircraft: (id) => {
     if (id && get().soundEnabled) {
@@ -325,7 +491,6 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
   },
 
   setHoveredId: (id) => set({ hoveredId: id }),
-
   setChaseCamera: (id) => set({ chaseCameraId: id }),
 
   setViewMode: (mode) => {
@@ -342,6 +507,14 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
       } else {
         document.documentElement.classList.remove('theme-day');
       }
+    }
+  },
+
+  setUnitSystem: (unit) => {
+    if (get().soundEnabled) soundFx.playClick();
+    set({ unitSystem: unit });
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('atc_unit_system', unit);
     }
   },
 
@@ -382,6 +555,28 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
     set((state) => ({ altitudeCorridorOpen: !state.altitudeCorridorOpen }));
   },
 
+  toggleAnalytics: () => {
+    if (get().soundEnabled) soundFx.playClick();
+    set((state) => ({ analyticsOpen: !state.analyticsOpen }));
+  },
+
+  toggleAlertsModal: () => {
+    if (get().soundEnabled) soundFx.playClick();
+    set((state) => ({ alertsModalOpen: !state.alertsModalOpen }));
+  },
+
+  toggleTableView: () => {
+    if (get().soundEnabled) soundFx.playClick();
+    set((state) => ({ tableViewOpen: !state.tableViewOpen }));
+  },
+
+  setOnboardingDismissed: (dismissed) => {
+    set({ onboardingDismissed: dismissed });
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('atc_onboarding_seen', String(dismissed));
+    }
+  },
+
   toggleSound: () => {
     const nextVal = soundFx.toggle();
     set({ soundEnabled: nextVal });
@@ -407,6 +602,34 @@ export const useAircraftStore = create<AircraftState>((set, get) => ({
     if (!target) return;
     if (get().soundEnabled) soundFx.playClick();
     set({ activeSector: target, selectedId: null, chaseCameraId: null });
+    get().restoreFromIndexedDB(sectorId);
+  },
+
+  addAlertRule: (rule) => {
+    const newRule: AlertRule = {
+      ...rule,
+      id: `rule-${Date.now()}`,
+    };
+    saveAlertRule(newRule);
+    set((state) => ({ alertRules: [...state.alertRules, newRule] }));
+  },
+
+  toggleAlertRule: (id) => {
+    set((state) => {
+      const updated = state.alertRules.map((r) =>
+        r.id === id ? { ...r, enabled: !r.enabled } : r
+      );
+      const rule = updated.find((r) => r.id === id);
+      if (rule) saveAlertRule(rule);
+      return { alertRules: updated };
+    });
+  },
+
+  removeAlertRule: (id) => {
+    deleteAlertRule(id);
+    set((state) => ({
+      alertRules: state.alertRules.filter((r) => r.id !== id),
+    }));
   },
 
   startReplay: () => {

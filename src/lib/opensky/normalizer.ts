@@ -24,8 +24,11 @@ export function mapOpenSkyCategory(
   }
 
   // Heuristic fallbacks if transponder didn't broadcast category field
-  if (velocity != null && velocity > 0 && velocity < 55 && altitude != null && altitude < 1500) {
+  if (velocity != null && velocity > 0 && velocity < 35 && altitude != null && altitude < 1200) {
     return 'helicopter';
+  }
+  if (velocity != null && velocity >= 35 && velocity < 85 && altitude != null && altitude < 3500) {
+    return 'light';
   }
   if (altitude != null && altitude > 10500) {
     return 'heavy';
@@ -36,8 +39,21 @@ export function mapOpenSkyCategory(
 
 /**
  * Converts raw OpenSky array into a clean, safe Aircraft object.
+ * Returns null if transponder ping lacks valid geographic coordinates (lat/lon),
+ * preventing aircraft from appearing at (0, 0) Null Island off the coast of Africa.
  */
-export function normalizeStateVector(raw: RawStateVector): Aircraft {
+export function normalizeStateVector(raw: RawStateVector): Aircraft | null {
+  if (
+    raw[5] == null ||
+    raw[6] == null ||
+    typeof raw[5] !== 'number' ||
+    typeof raw[6] !== 'number' ||
+    isNaN(raw[5]) ||
+    isNaN(raw[6])
+  ) {
+    return null;
+  }
+
   const vel = raw[9];
   const alt = raw[7];
   const rawCategory = typeof raw[17] === 'number' ? raw[17] : undefined;
@@ -48,10 +64,10 @@ export function normalizeStateVector(raw: RawStateVector): Aircraft {
     originCountry: raw[2],
     timePosition: raw[3],
     lastContact: raw[4],
-    longitude: raw[5] ?? 0,
-    latitude: raw[6] ?? 0,
+    longitude: raw[5],
+    latitude: raw[6],
     baroAltitude: alt,
-    onGround: raw[8],
+    onGround: Boolean(raw[8]),
     velocity: vel,
     heading: raw[10],
     verticalRate: raw[11],
@@ -61,3 +77,20 @@ export function normalizeStateVector(raw: RawStateVector): Aircraft {
     category: mapOpenSkyCategory(rawCategory, vel, alt),
   };
 }
+
+/**
+ * Normalizes an array of raw state vectors, automatically discarding
+ * any transponder records that do not contain valid geographic coordinates.
+ */
+export function normalizeOpenSkyResponse(rawStates: RawStateVector[]): Aircraft[] {
+  if (!Array.isArray(rawStates)) return [];
+  const normalized: Aircraft[] = [];
+  for (let i = 0; i < rawStates.length; i++) {
+    const plane = normalizeStateVector(rawStates[i]);
+    if (plane !== null) {
+      normalized.push(plane);
+    }
+  }
+  return normalized;
+}
+

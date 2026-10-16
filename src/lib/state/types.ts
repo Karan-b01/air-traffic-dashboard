@@ -1,4 +1,5 @@
 import type { Aircraft } from '../opensky/types';
+import type { AlertRule } from '../persistence/db';
 
 export interface HistoryPoint {
   longitude: number;
@@ -7,8 +8,10 @@ export interface HistoryPoint {
   timestamp: number;
 }
 
+export type ContactStatus = 'live' | 'aging' | 'stale' | 'lost';
+
 export interface TrackedAircraft extends Aircraft {
-  status: 'live' | 'stale' | 'lost';
+  status: ContactStatus;
   firstSeen: number;
   lastSeen: number;
   history: HistoryPoint[];
@@ -21,6 +24,8 @@ export interface TrackedAircraft extends Aircraft {
 
 export interface FetchHealth {
   status: 'live' | 'degraded' | 'rate_limited' | 'offline';
+  dataSource?: 'live' | 'cache' | 'simulated';
+  isSimulated?: boolean;
   lastSuccessTime: number | null;
   creditsRemaining: number | null;
   errorCount: number;
@@ -28,6 +33,7 @@ export interface FetchHealth {
   latencyMs: number | null;
   isCached: boolean;
   retryCountdown: number;
+  currentBackoffMs?: number;
 }
 
 export interface AirspaceFilter {
@@ -50,7 +56,7 @@ export interface ChaosSettings {
 export interface AtcEvent {
   id: string;
   timestamp: number;
-  type: 'emergency' | 'climb' | 'descent' | 'sector_enter' | 'system';
+  type: 'emergency' | 'climb' | 'descent' | 'sector_enter' | 'alert_rule' | 'system';
   callsign: string;
   message: string;
 }
@@ -62,3 +68,4 @@ export interface ReplaySnapshot {
 
 export type ViewMode = '2d' | '3d' | 'globe';
 export type ThemeMode = 'night' | 'day';
+export type UnitSystem = 'aviation' | 'metric';
