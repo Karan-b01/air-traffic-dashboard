@@ -61,18 +61,22 @@ export default function DataHealthPanel() {
   const isLive = health.status === 'live';
   const isRateLimited = health.status === 'rate_limited';
   const isOffline = health.status === 'offline';
+  const isSimulated = Boolean(health.isSimulated || health.dataSource === 'simulated');
+  const isCached = Boolean(health.isCached || health.dataSource === 'cache');
 
   const statusLabel = isOffline
     ? 'OFFLINE CACHE'
     : isRateLimited
-    ? 'RATE LIMITED (429)'
+    ? `RATE LIMITED (${health.retryCountdown > 0 ? health.retryCountdown : countdown}s BACKOFF)`
+    : isSimulated
+    ? 'SYNTHETIC FALLBACK'
     : isLive
     ? 'STREAM NOMINAL'
     : 'LINK DEGRADED';
 
   const statusTone = isOffline
     ? 'tone-offline'
-    : isRateLimited
+    : isRateLimited || isSimulated
     ? 'tone-warning'
     : isLive
     ? 'tone-live'
@@ -96,7 +100,24 @@ export default function DataHealthPanel() {
         </div>
 
         {/* Circular Countdown Refresh Ring */}
-        <CountdownRing secondsLeft={countdown} />
+        <CountdownRing secondsLeft={isRateLimited && health.retryCountdown > 0 ? health.retryCountdown : countdown} />
+      </div>
+
+      {/* Clear Live vs Simulated Data Source Banner */}
+      <div
+        className="data-source-indicator font-mono text-[9px] flex items-center justify-between px-2 py-1 my-1.5 rounded border"
+        style={{
+          background: isSimulated ? 'rgba(245, 158, 11, 0.12)' : isCached ? 'rgba(34, 211, 238, 0.08)' : 'rgba(16, 185, 129, 0.08)',
+          borderColor: isSimulated ? 'rgba(245, 158, 11, 0.35)' : isCached ? 'rgba(34, 211, 238, 0.25)' : 'rgba(16, 185, 129, 0.25)',
+        }}
+      >
+        <span className="text-slate-400">DATA STREAM:</span>
+        <span
+          className="font-bold tracking-wider"
+          style={{ color: isSimulated ? '#f59e0b' : isCached ? '#22d3ee' : '#10b981' }}
+        >
+          {isSimulated ? '● SIMULATED TRAFFIC' : isCached ? '● SECTOR MEMORY CACHE' : '● OPENSKY LIVE FEED'}
+        </span>
       </div>
 
       <div className="health-metrics-grid">
@@ -126,7 +147,9 @@ export default function DataHealthPanel() {
       {health.errorCount > 0 && (
         <div className="health-warning-strip" role="status">
           <AlertTriangle size={13} className="text-amber-400" />
-          <span>Adaptive backoff · {health.errorCount} retries</span>
+          <span>
+            {isRateLimited ? `HTTP 429 Active · Exponential backoff ${health.retryCountdown}s` : `Adaptive backoff · ${health.errorCount} retries`}
+          </span>
         </div>
       )}
 
