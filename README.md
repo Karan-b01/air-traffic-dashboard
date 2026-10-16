@@ -8,7 +8,6 @@
 [![Three.js](https://img.shields.io/badge/Three.js-WebGL-000000?style=flat&logo=three.js)](https://threejs.org/)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind-3.4-06B6D4?style=flat&logo=tailwindcss)](https://tailwindcss.com/)
 [![Tests](https://img.shields.io/badge/Tests-27%20Passed-10B981?style=flat)](tests/)
-[![License](https://img.shields.io/badge/License-MIT-emerald?style=flat)](LICENSE)
 
 ---
 
@@ -318,4 +317,4 @@ npm run start
 
 ## 11. License
 
-Built for the **CC-VIT 26-27 Recruitment Task**. Distributed under the MIT License.
+Built for the **CC-VIT 26-27 Recruitment Task**. 
