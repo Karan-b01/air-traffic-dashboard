@@ -255,10 +255,23 @@ export default function AircraftPanel() {
               <Radio size={12} />
               <span>SQUAWK: <b>{selectedPlane.squawk || 'AUTO'}</b></span>
             </div>
-            <span className={`contact-status-pill status-${selectedPlane.status}`}>
-              <span className="status-dot" />
-              {selectedPlane.onGround ? 'ON GROUND' : selectedPlane.status.toUpperCase()}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[9px] font-mono text-slate-400">
+                {Math.max(0, Math.round((Date.now() - selectedPlane.lastSeen) / 1000))}s ago
+              </span>
+              <span className={`contact-status-pill status-${selectedPlane.status}`}>
+                <span className="status-dot" />
+                {selectedPlane.onGround
+                  ? 'ON GROUND'
+                  : selectedPlane.status === 'lost'
+                  ? 'LOST (>60s)'
+                  : selectedPlane.status === 'stale'
+                  ? 'STALE (>25s)'
+                  : selectedPlane.status === 'aging'
+                  ? 'AGING (10-25s)'
+                  : 'LIVE CONTACT'}
+              </span>
+            </div>
           </div>
         </motion.aside>
       )}
