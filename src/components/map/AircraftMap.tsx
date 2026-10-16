@@ -100,7 +100,6 @@ export default function AircraftMap() {
   const radarSweepEnabled = useAircraftStore((state) => state.radarSweepEnabled);
   const densityHeatmapEnabled = useAircraftStore((state) => state.densityHeatmapEnabled);
   const rangeRingsEnabled = useAircraftStore((state) => state.rangeRingsEnabled);
-  const themeMode = useAircraftStore((state) => state.themeMode);
 
   // Hover Tooltip Position & Data state
   const [tooltipData, setTooltipData] = useState<{
@@ -559,6 +558,7 @@ export default function AircraftMap() {
       map.remove();
       mapInstance.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectAircraft, setHoveredId]);
 
   // 2. Camera View Mode Switch (2D / 3D Tilt / Globe)
@@ -767,7 +767,7 @@ export default function AircraftMap() {
         const color = getAltitudeColor(rp.displayAltitude, plane.onGround, isEmergency);
 
         // Opacity & Freshness: Dim non-selected planes to 40% when a selection exists
-        let finalOpacity = plane.status === 'live' ? 1.0 : plane.status === 'stale' ? 0.6 : 0.35;
+        let finalOpacity = plane.status === 'live' ? 1.0 : plane.status === 'aging' ? 0.85 : plane.status === 'stale' ? 0.6 : 0.35;
         if (selected && !isPlaneSelected) {
           finalOpacity *= 0.4;
         }
@@ -1019,7 +1019,7 @@ export default function AircraftMap() {
   }, [chaseCameraId, densityHeatmapEnabled]);
 
   return (
-    <div className={`map-wrapper-layer ${themeMode === 'day' ? 'theme-day' : ''}`}>
+    <div className="map-wrapper-layer">
       <div ref={mapContainer} className="aircraft-map-container" />
 
       {/* Atmospheric Rotating Radar Sweep Overlay */}

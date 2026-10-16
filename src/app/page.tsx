@@ -1,11 +1,13 @@
 // src/app/page.tsx
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Activity,
+  ArrowUpDown,
   ArrowUpRight,
+  BarChart3,
   Compass,
   Globe2,
   Layers,
@@ -13,13 +15,33 @@ import {
   Moon,
   Plane,
   Radio,
+  ShieldAlert,
   Signal,
   Sun,
+  Table,
   Volume2,
   VolumeX,
   Wind,
 } from 'lucide-react';
-import AircraftMap from '../components/map/AircraftMap';
+import dynamic from 'next/dynamic';
+
+const LandingPage = dynamic(() => import('../components/landing/LandingPage'), {
+  ssr: false,
+});
+
+const AircraftMap = dynamic(() => import('../components/map/AircraftMap'), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full flex items-center justify-center bg-[#070b14] font-mono text-cyan-400 text-xs">
+      INITIALIZING RADAR VECTOR ENGINE...
+    </div>
+  ),
+});
+
+const AirspaceAnalyticsModal = dynamic(() => import('../components/panels/AirspaceAnalyticsModal'), { ssr: false });
+const AlertRulesModal = dynamic(() => import('../components/panels/AlertRulesModal'), { ssr: false });
+const AccessibleTableView = dynamic(() => import('../components/panels/AccessibleTableView'), { ssr: false });
+
 import AltitudeCorridor from '../components/map/AltitudeCorridor';
 import AircraftPanel from '../components/panels/AircraftPanel';
 import DataHealthPanel from '../components/panels/DataHealthPanel';
@@ -29,7 +51,8 @@ import ChaosPanel from '../components/panels/ChaosPanel';
 import ReplayBar from '../components/panels/ReplayBar';
 import CommandPalette from '../components/panels/CommandPalette';
 import FpsOverlay from '../components/panels/FpsOverlay';
-import LandingPage from '../components/landing/LandingPage';
+import AltitudeLegend from '../components/ui/AltitudeLegend';
+import OnboardingTour from '../components/ui/OnboardingTour';
 import BootSequence from '../components/boot/BootSequence';
 import { StateBanners, EmptyRegionNotice } from '../components/ui/StateBanners';
 import { usePolling } from '../hooks/usePolling';
@@ -100,14 +123,59 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
   const setViewMode = useAircraftStore((state) => state.setViewMode);
   const themeMode = useAircraftStore((state) => state.themeMode);
   const setThemeMode = useAircraftStore((state) => state.setThemeMode);
+  const unitSystem = useAircraftStore((state) => state.unitSystem);
+  const setUnitSystem = useAircraftStore((state) => state.setUnitSystem);
   const soundEnabled = useAircraftStore((state) => state.soundEnabled);
   const toggleSound = useAircraftStore((state) => state.toggleSound);
   const toggleAltitudeCorridor = useAircraftStore((state) => state.toggleAltitudeCorridor);
   const altitudeCorridorOpen = useAircraftStore((state) => state.altitudeCorridorOpen);
   const radarSweepEnabled = useAircraftStore((state) => state.radarSweepEnabled);
   const toggleRadarSweep = useAircraftStore((state) => state.toggleRadarSweep);
-  const densityHeatmapEnabled = useAircraftStore((state) => state.densityHeatmapEnabled);
-  const toggleDensityHeatmap = useAircraftStore((state) => state.toggleDensityHeatmap);
+  const analyticsOpen = useAircraftStore((state) => state.analyticsOpen);
+  const toggleAnalytics = useAircraftStore((state) => state.toggleAnalytics);
+  const alertsModalOpen = useAircraftStore((state) => state.alertsModalOpen);
+  const toggleAlertsModal = useAircraftStore((state) => state.toggleAlertsModal);
+  const alertRules = useAircraftStore((state) => state.alertRules);
+  const tableViewOpen = useAircraftStore((state) => state.tableViewOpen);
+  const toggleTableView = useAircraftStore((state) => state.toggleTableView);
+  const restoreFromIndexedDB = useAircraftStore((state) => state.restoreFromIndexedDB);
+
+  // Restore IndexedDB snapshot & synchronize URL query params on initial mount
+  useEffect(() => {
+    restoreFromIndexedDB(activeSector.id);
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const sectorParam = params.get('sector');
+      const planeParam = params.get('plane');
+
+      if (sectorParam && SECTORS.some((s) => s.id === sectorParam)) {
+        setSector(sectorParam);
+      }
+      if (planeParam) {
+        selectAircraft(planeParam);
+      }
+
+      const savedUnit = localStorage.getItem('atc_unit_system');
+      if (savedUnit === 'metric' || savedUnit === 'aviation') {
+        setUnitSystem(savedUnit);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync sector and selected aircraft to URL search parameters
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('sector', activeSector.id);
+    if (selectedId) {
+      url.searchParams.set('plane', selectedId);
+    } else {
+      url.searchParams.delete('plane');
+    }
+    window.history.replaceState({}, '', url.toString());
+  }, [activeSector.id, selectedId]);
 
   const aircraftList = Object.values(aircraft);
   const airborneCount = aircraftList.filter((plane) => !plane.onGround).length;
@@ -126,9 +194,10 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
 
   const isLive = health.status === 'live';
   const isReplaying = useAircraftStore((state) => state.replay.isReplaying);
+  const armedAlertsCount = alertRules.filter((r) => r.enabled).length;
 
   return (
-    <main className={`dashboard-shell ${themeMode === 'day' ? 'theme-day' : ''} ${isReplaying ? 'is-replay-mode' : ''}`}>
+    <main className={`dashboard-shell ${isReplaying ? 'is-replay-mode' : ''}`}>
       {/* 2D / 3D WebGL Radar Map */}
       <AircraftMap />
       <div className="map-shade" aria-hidden="true" />
@@ -209,6 +278,42 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
           {/* Command Palette */}
           <CommandPalette />
 
+          {/* Airspace Sector Analytics Toggle */}
+          <button
+            type="button"
+            className={`tool-icon-btn ${analyticsOpen ? 'is-active' : ''}`}
+            onClick={toggleAnalytics}
+            title="Airspace Sector Analytics & Stratification"
+          >
+            <BarChart3 size={15} />
+            <span className="hidden lg:inline text-xs font-mono ml-1">ANALYTICS</span>
+          </button>
+
+          {/* Configurable Alert Rules Engine Toggle */}
+          <button
+            type="button"
+            className={`tool-icon-btn ${alertsModalOpen ? 'is-active' : ''}`}
+            onClick={toggleAlertsModal}
+            title="Configurable Alert Rules Engine"
+          >
+            <ShieldAlert size={15} />
+            <span className="hidden lg:inline text-xs font-mono ml-1">ALERTS</span>
+            {armedAlertsCount > 0 && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 ml-1 inline-block" />
+            )}
+          </button>
+
+          {/* Accessible Sortable Table View Toggle */}
+          <button
+            type="button"
+            className={`tool-icon-btn ${tableViewOpen ? 'is-active' : ''}`}
+            onClick={toggleTableView}
+            title="Toggle Accessible Sortable Table View"
+          >
+            <Table size={15} />
+            <span className="hidden lg:inline text-xs font-mono ml-1">TABLE</span>
+          </button>
+
           {/* Altitude Corridor Profile Toggle */}
           <button
             type="button"
@@ -217,7 +322,38 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
             title="Toggle Side Altitude Profile Corridor"
           >
             <Activity size={15} />
-            <span className="hidden md:inline text-xs font-mono ml-1">CORRIDOR</span>
+            <span className="hidden xl:inline text-xs font-mono ml-1">CORRIDOR</span>
+          </button>
+
+          {/* Unit System Toggle (Aviation vs Metric) */}
+          <button
+            type="button"
+            className="tool-icon-btn font-mono text-[10px]"
+            onClick={() => setUnitSystem(unitSystem === 'aviation' ? 'metric' : 'aviation')}
+            title={`Switch Unit System (Current: ${unitSystem === 'aviation' ? 'Aviation FL/kt' : 'Metric m/kph'})`}
+          >
+            <ArrowUpDown size={13} className="mr-1" />
+            <span>{unitSystem === 'aviation' ? 'FL / KT' : 'M / KPH'}</span>
+          </button>
+
+          {/* Day / Night Theme Toggle */}
+          <button
+            type="button"
+            className="tool-icon-btn"
+            onClick={() => setThemeMode(themeMode === 'night' ? 'day' : 'night')}
+            title={`Toggle Theme (Current: ${themeMode === 'night' ? 'Night Ops' : 'Daylight Ops'})`}
+          >
+            {themeMode === 'night' ? <Sun size={14} /> : <Moon size={14} />}
+          </button>
+
+          {/* Web Audio Synthesizer Toggle */}
+          <button
+            type="button"
+            className={`tool-icon-btn ${soundEnabled ? 'text-cyan-400 border-cyan-400/40' : ''}`}
+            onClick={toggleSound}
+            title={soundEnabled ? 'Mute ATC Web Audio' : 'Enable ATC Web Audio Synth'}
+          >
+            {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
           </button>
 
           {/* Radar Sweep Toggle */}
@@ -227,34 +363,39 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
             onClick={toggleRadarSweep}
             title="Toggle Radar Sweep Beam"
           >
-            <Radio size={15} />
-          </button>
-
-          {/* Audio Synthesizer Toggle */}
-          <button
-            type="button"
-            className={`tool-icon-btn ${soundEnabled ? 'is-active' : ''}`}
-            onClick={toggleSound}
-            title={soundEnabled ? 'Mute Audio Synthesizer' : 'Unmute Audio Synthesizer'}
-          >
-            {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
-          </button>
-
-          {/* Daylight Ops / Night Ops Theme Toggle */}
-          <button
-            type="button"
-            className="tool-icon-btn"
-            onClick={() => setThemeMode(themeMode === 'night' ? 'day' : 'night')}
-            title={themeMode === 'night' ? 'Switch to Daylight Ops' : 'Switch to Night Ops'}
-          >
-            {themeMode === 'night' ? <Sun size={15} /> : <Moon size={15} />}
+            <Radio size={14} />
           </button>
 
           {/* Status & Clock */}
           <div className="topbar-status">
-            <span className={`connection-pill ${isLive ? 'is-live' : 'is-warning'}`}>
+            <span
+              className={`connection-pill ${
+                health.status === 'rate_limited'
+                  ? 'is-warning'
+                  : health.isSimulated || health.dataSource === 'simulated'
+                  ? 'is-simulated'
+                  : isLive
+                  ? 'is-live'
+                  : 'is-warning'
+              }`}
+              title={
+                health.isSimulated || health.dataSource === 'simulated'
+                  ? 'Displaying realistic synthetic sector traffic (OpenSky upstream rate limited or unreachable)'
+                  : health.status === 'rate_limited'
+                  ? `HTTP 429 Rate Limited · Exponential backoff active (${health.retryCountdown}s)`
+                  : 'Live OpenSky ADS-B telemetry stream'
+              }
+            >
               <span className="connection-dot" />
-              {isLive ? 'LIVE FEED' : 'BACKOFF'}
+              {health.status === 'rate_limited'
+                ? `BACKOFF ${health.retryCountdown}s`
+                : health.isSimulated || health.dataSource === 'simulated'
+                ? 'SIMULATED'
+                : health.isCached || health.dataSource === 'cache'
+                ? 'CACHED'
+                : isLive
+                ? 'LIVE FEED'
+                : 'OFFLINE'}
             </span>
             <span className="topbar-clock font-mono tabular-nums">
               {health.lastSuccessTime
@@ -375,7 +516,22 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
 
           <div className="overview-footer font-mono">
             <span>DATA SOURCE</span>
-            <span>OPENSKY ADS-B <span className="footer-live-dot" /></span>
+            <span className="flex items-center gap-1.5">
+              {health.isSimulated || health.dataSource === 'simulated'
+                ? 'SYNTHETIC FALLBACK'
+                : health.isCached || health.dataSource === 'cache'
+                ? 'SECTOR CACHE'
+                : 'OPENSKY LIVE ADS-B'}
+              <span
+                className={`footer-live-dot ${
+                  health.isSimulated || health.dataSource === 'simulated'
+                    ? 'is-simulated'
+                    : health.isCached
+                    ? 'is-cached'
+                    : ''
+                }`}
+              />
+            </span>
           </div>
         </aside>
 
@@ -385,6 +541,9 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
         {/* Data Link Health Panel with Circular Countdown Ring */}
         <DataHealthPanel />
       </div>
+
+      {/* Interactive Altitude Legend Strip (Quick Band Filter) */}
+      <AltitudeLegend />
 
       {/* Side Profile Elevation Corridor */}
       <AltitudeCorridor />
@@ -404,6 +563,12 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
         <FpsOverlay />
       </div>
 
+      {/* Modals & Guidance Toasts */}
+      <AirspaceAnalyticsModal />
+      <AlertRulesModal />
+      <AccessibleTableView />
+      <OnboardingTour />
+
       {/* Footer */}
       <footer className="dashboard-footer font-mono">
         <span>AIRSPACE NIGHT OPERATIONS · PRECISION ADS-B VECTOR ENGINE</span>
@@ -414,3 +579,4 @@ function DashboardConsole({ onReturnToLanding }: { onReturnToLanding: () => void
     </main>
   );
 }
+

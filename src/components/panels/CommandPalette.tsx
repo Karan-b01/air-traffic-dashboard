@@ -12,8 +12,6 @@ import {
   Radio,
   Search,
   ShieldAlert,
-  Volume2,
-  VolumeX,
   X,
 } from 'lucide-react';
 import { useAircraftStore, SECTORS } from '../../lib/state/useAircraftStore';
@@ -41,8 +39,6 @@ export default function CommandPalette() {
   const toggleDensityHeatmap = useAircraftStore((state) => state.toggleDensityHeatmap);
   const toggleRangeRings = useAircraftStore((state) => state.toggleRangeRings);
   const toggleAltitudeCorridor = useAircraftStore((state) => state.toggleAltitudeCorridor);
-  const toggleSound = useAircraftStore((state) => state.toggleSound);
-  const soundEnabled = useAircraftStore((state) => state.soundEnabled);
   const triggerMaydayAlert = useAircraftStore((state) => state.triggerMaydayAlert);
 
   // Global Ctrl+K / Cmd+K listener
@@ -167,18 +163,6 @@ export default function CommandPalette() {
     });
 
     list.push({
-      id: 'action-sound',
-      category: 'action',
-      title: soundEnabled ? 'Mute ATC Audio Synthesizer' : 'Unmute ATC Audio Synthesizer',
-      subtitle: 'Synthesizer blips, sirens, and telemetry tones',
-      icon: soundEnabled ? VolumeX : Volume2,
-      action: () => {
-        toggleSound();
-        setIsOpen(false);
-      },
-    });
-
-    list.push({
       id: 'action-mayday',
       category: 'action',
       title: 'Declare Emergency Squawk 7700 (Demo)',
@@ -215,8 +199,6 @@ export default function CommandPalette() {
     toggleAltitudeCorridor,
     toggleRadarSweep,
     toggleDensityHeatmap,
-    toggleSound,
-    soundEnabled,
     triggerMaydayAlert,
   ]);
 
