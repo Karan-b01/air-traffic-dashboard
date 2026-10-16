@@ -2,9 +2,9 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'CC-VIT Airspace',
-  description: 'Live air traffic dashboard',
-}
+  title: 'Airspace | CC-VIT Flight Systems',
+  description: 'Live air traffic operations dashboard for the Southern India sector.',
+};
 
 export default function RootLayout({
   children,
